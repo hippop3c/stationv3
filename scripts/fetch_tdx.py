@@ -1,12 +1,3 @@
-"""
-TDX YouBike 雙北即時資料抓取 — 每 6 分鐘執行 (GitHub Actions)
-金鑰從環境變數讀取: TDX_CLIENT_ID / TDX_CLIENT_SECRET
-
-儲存邏輯:
-- 每天一個檔 data/{YYYY-MM-DD}.json, 內容為當天所有「有變化時間點」的陣列
-- 每次抓取與當天最後一筆比對, 只要雙北任一站的在站數或空位數有變, 就把整批全站快照 append 進去; 完全沒變則跳過
-- data/index.json 紀錄有資料的日期清單與當天最新時間
-"""
 import os
 import json
 import requests
@@ -39,7 +30,6 @@ def fetch(endpoint, token):
 
 
 def snapshot_signature(stations):
-    """產生快照的比對指紋: {站id: (rent, return)} 的排序字串"""
     items = sorted((s["id"], s["rent"], s["return"]) for s in stations)
     return json.dumps(items, separators=(",", ":"))
 
@@ -50,10 +40,54 @@ def main():
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M")
 
-    # 抓雙北即時車位
     stations = []
     for city in ["Taipei", "NewTaipei"]:
         avail = fetch(f"/v2/Bike/Availability/City/{city}", token)
         for s in avail:
             stations.append({
                 "id": s.get("StationUID") or s.get("StationID"),
+                "rent": s.get("AvailableRentBikes"),
+                "return": s.get("AvailableReturnBikes"),
+            })
+
+    sig = snapshot_signature(stations)
+
+    day_path = os.path.join("data", f"{date_str}.json")
+    if os.path.exists(day_path):
+        with open(day_path, encoding="utf-8") as f:
+            day_records = json.load(f)
+    else:
+        day_records = []
+
+    if day_records:
+        if day_records[-1].get("_sig") == sig:
+            print(f"{time_str} no change, skip ({len(day_records)} records)")
+            return
+
+    rec = {
+        "time": time_str,
+        "datetime": now.isoformat(),
+        "_sig": sig,
+        "stations": {s["id"]: [s["rent"], s["return"]] for s in stations},
+    }
+    day_records.append(rec)
+
+    os.makedirs("data", exist_ok=True)
+    with open(day_path, "w", encoding="utf-8") as f:
+        json.dump(day_records, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"{time_str} saved record #{len(day_records)} ({len(stations)} stations)")
+
+    index_path = os.path.join("data", "index.json")
+    if os.path.exists(index_path):
+        with open(index_path, encoding="utf-8") as f:
+            index = json.load(f)
+    else:
+        index = {}
+    index[date_str] = {"count": len(day_records), "latest": time_str}
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"index.json updated: {date_str} -> {index[date_str]}")
+
+
+if __name__ == "__main__":
+    main()
