@@ -2,7 +2,8 @@ name: 抓取 YouBike 即時資料
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    # 每 6 分鐘觸發 (GitHub Actions 能穩定排程的較密間距; 實際可能略有延遲)
+    - cron: '*/6 * * * *'
   workflow_dispatch:
 
 permissions:
