@@ -245,7 +245,7 @@ h1{
     <h1>雙北 YouBike 場站車輛配置模擬器</h1>
     <div class="stats" id="stats"></div>
   </div>
-  <div class="subtitle">民眾借還 2026/05/18~22 · 5天平均保守取整 · 調度曲線可選擇性疊加 · 點 🪄 一鍵自動求最少調度</div>
+  <div class="subtitle">民眾借還歷史分析 + TDX即時(每6分更新) · 車位上限線隨即時可還空位浮動 · 點🪄自動求最少調度</div>
 </header>
 
 <div class="search-bar">
@@ -595,11 +595,40 @@ function drawChart(s, st){
     return 5;
   });
   
-  const capacityLine = labels.map(()=>C);
+  // 即時有效車位 = 該站當下 在站數(rent) + 可還空位(return)
+  // 有即時資料時用浮動值, 否則退回固定總車位 C
+  let effCap = C;
+  let effCapIsLive = false;
+  if(liveData && liveData.returns){
+    let rent = liveData.stations[s.code];
+    let ret = liveData.returns[s.code];
+    if(rent === undefined){
+      for(const k in liveData.stations){
+        if(k.endsWith(s.code) || k.includes(s.code)){ rent = liveData.stations[k]; ret = liveData.returns[k]; break; }
+      }
+    }
+    if(rent !== undefined && rent !== null && ret !== undefined && ret !== null){
+      effCap = rent + ret;
+      effCapIsLive = true;
+    }
+  }
+  const capacityLine = labels.map(()=>effCap);
   const zeroLine = labels.map(()=>0);
   // Y軸範圍: 只納入「目前有顯示」的線
   let allVals = [0];
-  if(lineVisible.capacity) allVals.push(C);
+  // 先算 effCap (與 drawChart 一致)
+  let _effCap = C;
+  if(liveData && liveData.returns){
+    let rent = liveData.stations[s.code];
+    let ret = liveData.returns[s.code];
+    if(rent === undefined){
+      for(const k in liveData.stations){
+        if(k.endsWith(s.code) || k.includes(s.code)){ rent = liveData.stations[k]; ret = liveData.returns[k]; break; }
+      }
+    }
+    if(rent !== undefined && rent !== null && ret !== undefined && ret !== null) _effCap = rent + ret;
+  }
+  if(lineVisible.capacity) allVals.push(_effCap);
   if(lineVisible.stock) allVals = allVals.concat(stockData);
   if(lineVisible.people){
     for(let h=6; h<=23; h++) allVals.push(-(s.deltas[h]||0));
@@ -651,7 +680,7 @@ function drawChart(s, st){
         }
         // 車位上限
         if(lineVisible.capacity){
-          ds.push({label:'車位上限', data:capacityLine, borderColor:'#ff6b6b', borderWidth:2, borderDash:[8,4], pointRadius:0, fill:false, tension:0});
+          ds.push({label:(effCapIsLive?'有效車位('+effCap+' 即時)':'車位上限('+effCap+')'), data:capacityLine, borderColor:'#ff6b6b', borderWidth:2, borderDash:[8,4], pointRadius:0, fill:false, tension:0});
         }
         // 即時在站車輛數 (TDX 最新一筆, 單一水平點/線)
         if(lineVisible.live && liveData){
