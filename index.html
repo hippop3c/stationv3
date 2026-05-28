@@ -283,7 +283,7 @@ const STATIONS = [{"code":"500101003","name":"國北教大實小東側門","city
 const stationByCode = {};
 STATIONS.forEach(s => { stationByCode[s.code] = s; });
 
-// 載入可用日期清單
+// 載入可用日期清單 (新結構: index.json = {date:{count,latest}})
 async function loadDateIndex(){
   try {
     const resp = await fetch(`${DATA_BASE}/index.json?t=${Date.now()}`);
@@ -293,12 +293,12 @@ async function loadDateIndex(){
     const sel = document.getElementById('dateSelect');
     if(sel){
       sel.innerHTML = '<option value="">選擇回放日期…</option>' +
-        availableDates.map(d=>`<option value="${d}">${d}</option>`).join('');
+        availableDates.map(d=>`<option value="${d}">${d} (${idx[d].count||0}筆)</option>`).join('');
     }
   } catch(e){ console.log('無 index.json 或載入失敗:', e); }
 }
 
-// 載入最新即時快照 (取 index 最後一天的最後一小時)
+// 載入最新即時快照 (取最後一天檔案的最後一筆)
 async function loadLatest(){
   try {
     const resp = await fetch(`${DATA_BASE}/index.json?t=${Date.now()}`);
@@ -307,39 +307,32 @@ async function loadLatest(){
     const dates = Object.keys(idx).sort();
     if(!dates.length) return;
     const lastDate = dates[dates.length-1];
-    const hours = idx[lastDate];
-    const lastHour = hours[hours.length-1];
-    const hh = String(lastHour).padStart(2,'0');
-    const r2 = await fetch(`${DATA_BASE}/${lastDate}/${hh}.json?t=${Date.now()}`);
+    const r2 = await fetch(`${DATA_BASE}/${lastDate}.json?t=${Date.now()}`);
     if(!r2.ok) return;
-    const snap = await r2.json();
-    const map = {};
-    snap.stations.forEach(st => { map[st.id] = st.rent; });
-    liveData = { datetime: snap.datetime, stations: map };
+    const records = await r2.json();
+    if(!records.length) return;
+    const last = records[records.length-1];
+    // stations: {id: [rent, return]}
+    const rentMap = {}, returnMap = {};
+    for(const id in last.stations){
+      rentMap[id] = last.stations[id][0];
+      returnMap[id] = last.stations[id][1];
+    }
+    liveData = { datetime: last.datetime, time: last.time, stations: rentMap, returns: returnMap };
     const el = document.getElementById('liveTime');
-    if(el) el.textContent = '即時資料: ' + snap.datetime.replace('T',' ').slice(0,16);
+    if(el) el.textContent = '即時資料: ' + (last.datetime||'').replace('T',' ').slice(0,16);
   } catch(e){ console.log('即時資料載入失敗:', e); }
 }
 
-// 載入指定日期全天快照
+// 載入指定日期全天資料 (新結構: 每日一檔, 陣列)
 async function loadReplay(date){
   if(!date){ replayData = null; renderDetail(); return; }
   try {
-    const resp = await fetch(`${DATA_BASE}/index.json?t=${Date.now()}`);
-    const idx = await resp.json();
-    const hours = idx[date] || [];
-    const hourly = {};
-    await Promise.all(hours.map(async h => {
-      const hh = String(h).padStart(2,'0');
-      const r = await fetch(`${DATA_BASE}/${date}/${hh}.json?t=${Date.now()}`);
-      if(r.ok){
-        const snap = await r.json();
-        const map = {};
-        snap.stations.forEach(st => { map[st.id] = st.rent; });
-        hourly[h] = map;
-      }
-    }));
-    replayData = { date, hourly };
+    const r = await fetch(`${DATA_BASE}/${date}.json?t=${Date.now()}`);
+    if(!r.ok){ replayData = null; renderDetail(); return; }
+    const records = await r.json();
+    // records: [{time, datetime, stations:{id:[rent,return]}}, ...]
+    replayData = { date, records };
     selectedDate = date;
     renderDetail();
   } catch(e){ console.log('回放資料載入失敗:', e); }
@@ -618,11 +611,14 @@ function drawChart(s, st){
     let rent = liveData.stations[s.code];
     if(rent !== undefined && rent !== null) allVals.push(rent);
   }
-  if(lineVisible.replay && replayData){
-    for(const h in replayData.hourly){
-      const v = replayData.hourly[h][s.code];
-      if(v !== undefined && v !== null) allVals.push(v);
-    }
+  if(lineVisible.replay && replayData && replayData.records){
+    replayData.records.forEach(rec=>{
+      let arr = rec.stations[s.code];
+      if(arr === undefined){
+        for(const k in rec.stations){ if(k.endsWith(s.code)||k.includes(s.code)){ arr=rec.stations[k]; break; } }
+      }
+      if(arr !== undefined && arr[0] !== null) allVals.push(arr[0]);
+    });
   }
   // 上下界各往外加 10, 並取整數
   const yMin = Math.floor(Math.min(...allVals)) - 10;
@@ -671,23 +667,28 @@ function drawChart(s, st){
           if(rent !== undefined && rent !== null){
             // 畫成一條水平線(整天同值), 代表「目前」在站數
             const liveLine = labels.map(()=>rent);
-            ds.push({label:'即時在站('+rent+'台)', data:liveLine, borderColor:'#60a5fa', borderWidth:2, borderDash:[2,2], pointRadius:0, fill:false, tension:0});
+            ds.push({label:'即時在站('+rent+'台 '+(liveData.time||'')+')', data:liveLine, borderColor:'#60a5fa', borderWidth:2, borderDash:[2,2], pointRadius:0, fill:false, tension:0});
           }
         }
-        // 當日回放: 選定日期每小時在站車輛數
-        if(lineVisible.replay && replayData){
+        // 當日回放: 每筆 record(約6分鐘間隔)的在站車輛數
+        // 為對應主圖的整點 X 軸(6..23), 每個整點取「該小時最後一筆 record」的值
+        if(lineVisible.replay && replayData && replayData.records){
           const code = s.code;
-          const replayLine = labels.map((_, i)=>{
-            const h = i + 6;
-            const hourMap = replayData.hourly[h];
-            if(!hourMap) return null;
-            let rent = hourMap[code];
-            if(rent === undefined){
-              for(const k in hourMap){
-                if(k.endsWith(code) || k.includes(code)){ rent = hourMap[k]; break; }
+          const hourVal = {}; // h -> rent (該小時最後一筆)
+          replayData.records.forEach(rec=>{
+            const hh = parseInt((rec.time||'').split(':')[0]);
+            if(isNaN(hh)) return;
+            let arr = rec.stations[code];
+            if(arr === undefined){
+              for(const k in rec.stations){
+                if(k.endsWith(code) || k.includes(code)){ arr = rec.stations[k]; break; }
               }
             }
-            return (rent === undefined) ? null : rent;
+            if(arr !== undefined) hourVal[hh] = arr[0]; // [rent, return] 取 rent
+          });
+          const replayLine = labels.map((_, i)=>{
+            const h = i + 6;
+            return (hourVal[h] === undefined) ? null : hourVal[h];
           });
           ds.push({label:'當日在站('+replayData.date+')', data:replayLine, borderColor:'#f0883e', backgroundColor:'#f0883e22', borderWidth:3, pointRadius:4, pointHoverRadius:7, pointBackgroundColor:'#f0883e', fill:false, tension:0.15, spanGaps:true});
         }
@@ -1080,7 +1081,7 @@ if(STATIONS.length){
 loadDateIndex();
 loadLatest().then(()=>{ if(currentCode) renderDetail(); });
 // 每小時自動重新抓最新 (頁面開著時)
-setInterval(()=>{ loadLatest().then(()=>{ if(currentCode) renderDetail(); }); }, 3600*1000);
+setInterval(()=>{ loadLatest().then(()=>{ if(currentCode) renderDetail(); }); }, 360*1000);
 </script>
 </body>
 </html>
