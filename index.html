@@ -1186,19 +1186,22 @@ function drawLiveChart(s){
     data:{ labels, datasets: ds },
     options:{
       responsive:true, maintainAspectRatio:false,
-      interaction:{mode:'index', intersect:false},
+      interaction:{mode:'nearest', axis:'x', intersect:false},
       plugins:{
         legend:{position:'top', labels:{color:'#e8eef7', font:{size:12}, usePointStyle:true}},
         tooltip:{
           backgroundColor:'#1a212b', borderColor:'#2d3847', borderWidth:1,
           titleColor:'#ffb84d', bodyColor:'#e8eef7',
           callbacks:{
-            title:(items)=> labels[items[0].dataIndex],
+            title:(items)=>{
+              const i = items[0].dataIndex;
+              return labels[i] || '';
+            },
             afterBody:(items)=>{
               const i = items[0].dataIndex;
               const lines = [];
-              if(stockArr[i]!==null) lines.push('在站: '+stockArr[i]+' 台');
-              if(capArr[i]!==null) lines.push('有效車位: '+capArr[i]);
+              if(stockArr[i] !== null && stockArr[i] !== undefined) lines.push('在站: '+stockArr[i]+' 台');
+              if(capArr[i] !== null && capArr[i] !== undefined) lines.push('有效車位: '+capArr[i]);
               return lines;
             }
           }
@@ -1206,9 +1209,13 @@ function drawLiveChart(s){
       },
       scales:{
         x:{
-          ticks:{ color:'#8b9bb0', maxTicksLimit:24, autoSkip:true,
-            callback:function(v,i){ const l=labels[i]; return l && l.endsWith(':00') ? l.split(':')[0] : ''; } },
-          grid:{color:'#2d3847'}, title:{display:true, text:'時刻(每10分鐘)', color:'#8b9bb0'}
+          ticks:{ color:'#8b9bb0', maxTicksLimit:24, autoSkip:false,
+            callback:function(value, index){
+              // labels = 00:00, 00:10, ... 23:50; index 從 0 起, 每 6 格一個整點
+              if(index % 6 === 0) return String(Math.floor(index/6));
+              return '';
+            } },
+          grid:{color:'#2d3847', display:true}, title:{display:true, text:'時刻(每10分鐘)', color:'#8b9bb0'}
         },
         y:{ min:yMin, max:yMax, ticks:{color:'#8b9bb0', precision:0}, grid:{color:'#2d3847'},
           title:{display:true, text:'車輛數', color:'#8b9bb0'} }
