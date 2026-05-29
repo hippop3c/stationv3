@@ -28,6 +28,12 @@ h1{
 }
 .subtitle{color:var(--muted);font-size:11px;margin-top:2px;line-height:1.4}
 .stats{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap}
+.mode-btn{background:var(--panel);border:1px solid var(--line);color:var(--muted);
+  padding:7px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;
+  font-family:inherit;transition:all .15s}
+.mode-btn:hover{border-color:var(--accent-2)}
+.mode-btn.active{background:var(--accent-2);color:#1a1a1a;border-color:var(--accent-2)}
+
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 10px;font-size:11px;display:flex;align-items:center;gap:6px}
 .stat .dot{width:8px;height:8px;border-radius:50%}
 .stat .num{font-weight:700;font-size:14px;color:var(--text)}
@@ -245,7 +251,11 @@ h1{
     <h1>雙北 YouBike 場站車輛配置模擬器</h1>
     <div class="stats" id="stats"></div>
   </div>
-  <div class="subtitle">民眾借還歷史分析 + TDX即時(每6分更新) · 車位上限線隨即時可還空位浮動 · 點🪄自動求最少調度</div>
+  <div class="subtitle">民眾借還歷史分析 + TDX即時 · 切換「分析/即時」檢視不同資料</div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button id="modeAnalysis" class="mode-btn active" onclick="setViewMode('analysis')">📊 分析模式</button>
+    <button id="modeLive" class="mode-btn" onclick="setViewMode('live')">📡 即時模式</button>
+  </div>
 </header>
 
 <div class="search-bar">
@@ -396,6 +406,10 @@ document.getElementById('stats').innerHTML = `
 let currentCode = null;
 const state = {};
 let chart = null;
+// 檢視模式: 'analysis'(歷史分析) / 'live'(即時)
+let viewMode = 'analysis';
+// 即時模式線開關
+let liveLineVisible = { stock:true, capacity:true, zero:true };
 // 每條線的顯示開關 (使用者自選)
 let lineVisible = {
   people: true,      // 民眾行為(歷史平均)
@@ -947,15 +961,21 @@ function renderDetail(){
     
     <div class="bottom-row"><div class="chart-section">
       <div class="chart-title">
-        <span>每小時曲線 (6:00 ~ 23:00)</span>
+        <span id="chartTitleText">${viewMode==='live' ? '即時資料 (00:00 ~ 23:50, 每10分)' : '每小時曲線 (6:00 ~ 23:00)'}</span>
         <div class="line-toggles">
-          <label class="line-toggle ${lineVisible.people?'on':''}" data-line="people"><span class="sw" style="background:#5dd3b3"></span>民眾行為</label>
-          <label class="line-toggle ${lineVisible.dispatch?'on':''}" data-line="dispatch"><span class="sw" style="background:#a78bfa"></span>調度行為</label>
-          <label class="line-toggle ${lineVisible.stock?'on':''}" data-line="stock"><span class="sw" style="background:#5dd3b3"></span>在站車輛數</label>
-          <label class="line-toggle ${lineVisible.live?'on':''}" data-line="live"><span class="sw" style="background:#60a5fa"></span>即時在站</label>
-          <label class="line-toggle ${lineVisible.replay?'on':''}" data-line="replay"><span class="sw" style="background:#f0883e"></span>當日回放</label>
-          <label class="line-toggle ${lineVisible.capacity?'on':''}" data-line="capacity"><span class="sw" style="background:#ff6b6b"></span>車位上限</label>
-          <label class="line-toggle ${lineVisible.zero?'on':''}" data-line="zero"><span class="sw" style="background:#ffb84d"></span>0 線</label>
+          ${viewMode==='live' ? `
+            <label class="line-toggle ${liveLineVisible.stock?'on':''}" data-liveline="stock"><span class="sw" style="background:#5dd3b3"></span>在站車輛數</label>
+            <label class="line-toggle ${liveLineVisible.capacity?'on':''}" data-liveline="capacity"><span class="sw" style="background:#ff6b6b"></span>有效車位</label>
+            <label class="line-toggle ${liveLineVisible.zero?'on':''}" data-liveline="zero"><span class="sw" style="background:#ffb84d"></span>0 線</label>
+          ` : `
+            <label class="line-toggle ${lineVisible.people?'on':''}" data-line="people"><span class="sw" style="background:#5dd3b3"></span>民眾行為</label>
+            <label class="line-toggle ${lineVisible.dispatch?'on':''}" data-line="dispatch"><span class="sw" style="background:#a78bfa"></span>調度行為</label>
+            <label class="line-toggle ${lineVisible.stock?'on':''}" data-line="stock"><span class="sw" style="background:#5dd3b3"></span>在站車輛數</label>
+            <label class="line-toggle ${lineVisible.live?'on':''}" data-line="live"><span class="sw" style="background:#60a5fa"></span>即時在站</label>
+            <label class="line-toggle ${lineVisible.replay?'on':''}" data-line="replay"><span class="sw" style="background:#f0883e"></span>當日回放</label>
+            <label class="line-toggle ${lineVisible.capacity?'on':''}" data-line="capacity"><span class="sw" style="background:#ff6b6b"></span>車位上限</label>
+            <label class="line-toggle ${lineVisible.zero?'on':''}" data-line="zero"><span class="sw" style="background:#ffb84d"></span>0 線</label>
+          `}
         </div>
       </div>
       <div class="chart-wrap"><canvas id="stockChart"></canvas></div>
@@ -970,15 +990,30 @@ function renderDetail(){
     </div></div>
   `;
   
-  drawChart(s, st);
+  if(viewMode === 'live'){
+    drawLiveChart(s);
+  } else {
+    drawChart(s, st);
+  }
   attachDetailEvents(s, st);
 }
 
 function attachDetailEvents(s, st){
+  // 即時模式: 隱藏分析專用區塊(調度模擬、每小時格子等)
+  const analysisOnly = ['.actions-row', '.controls', '.dispatch-list', '.reset-row', '.timeline'];
+  analysisOnly.forEach(sel=>{
+    const el = document.querySelector('.detail '+sel);
+    if(el) el.style.display = (viewMode==='live') ? 'none' : '';
+  });
   document.querySelectorAll('.line-toggle').forEach(el=>{
     el.addEventListener('click', ()=>{
-      const k = el.dataset.line;
-      lineVisible[k] = !lineVisible[k];
+      if(el.dataset.liveline){
+        const k = el.dataset.liveline;
+        liveLineVisible[k] = !liveLineVisible[k];
+      } else if(el.dataset.line){
+        const k = el.dataset.line;
+        lineVisible[k] = !lineVisible[k];
+      }
       renderDetail();
     });
   });
@@ -1078,6 +1113,110 @@ function clearExtraDispatches(){
   renderDetail();
 }
 function setMode(m){ chartMode = m; renderDetail(); }
+
+function setViewMode(m){
+  viewMode = m;
+  document.getElementById('modeAnalysis').classList.toggle('active', m==='analysis');
+  document.getElementById('modeLive').classList.toggle('active', m==='live');
+  // 即時模式預設載入今天日期資料
+  if(m==='live' && !replayData){
+    const today = availableDates.length ? availableDates[availableDates.length-1] : null;
+    if(today){
+      const sel = document.getElementById('dateSelect');
+      if(sel) sel.value = today;
+      loadReplay(today);
+      return;
+    }
+  }
+  renderDetail();
+}
+
+// 即時模式圖表: X軸固定 00:00~23:50 每10分一格
+function drawLiveChart(s){
+  const labels = [];
+  for(let h=0; h<24; h++) for(let m=0; m<60; m+=10) labels.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
+
+  function timeToIdx(t){
+    const [h,m] = t.split(':').map(Number);
+    return h*6 + Math.round(m/10);
+  }
+
+  // 從 replayData.records 取該站的 在站數 與 有效車位
+  const stockArr = new Array(144).fill(null);
+  const capArr = new Array(144).fill(null);
+  if(replayData && replayData.records){
+    replayData.records.forEach(rec=>{
+      const idx = timeToIdx(rec.time);
+      if(idx<0 || idx>=144) return;
+      let arr = rec.stations[s.code];
+      if(arr === undefined){
+        for(const k in rec.stations){ if(k.endsWith(s.code)||k.includes(s.code)){ arr=rec.stations[k]; break; } }
+      }
+      if(arr !== undefined){
+        stockArr[idx] = arr[0];                    // rent = 在站數
+        capArr[idx] = arr[0] + arr[1];             // rent+return = 有效車位
+      }
+    });
+  }
+
+  const zeroArr = labels.map(()=>0);
+
+  // Y軸範圍
+  let allV = [0];
+  stockArr.forEach(v=>{ if(v!==null) allV.push(v); });
+  capArr.forEach(v=>{ if(v!==null) allV.push(v); });
+  const yMin = Math.min(...allV) - 5;
+  const yMax = Math.max(...allV) + 5;
+
+  const ds = [];
+  if(liveLineVisible.stock){
+    ds.push({label:'在站車輛數', data:stockArr, borderColor:'#5dd3b3', backgroundColor:'#5dd3b322', borderWidth:2, pointRadius:2, pointHoverRadius:5, pointBackgroundColor:'#5dd3b3', fill:false, tension:0.2, spanGaps:true});
+  }
+  if(liveLineVisible.capacity){
+    ds.push({label:'有效車位(在站+空位)', data:capArr, borderColor:'#ff6b6b', borderWidth:2, borderDash:[6,3], pointRadius:0, fill:false, tension:0.2, spanGaps:true});
+  }
+  if(liveLineVisible.zero){
+    ds.push({label:'0 (見底)', data:zeroArr, borderColor:'#ffb84d', borderWidth:2, pointRadius:0, fill:false, tension:0});
+  }
+
+  const ctx = document.getElementById('stockChart').getContext('2d');
+  if(chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type:'line',
+    data:{ labels, datasets: ds },
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index', intersect:false},
+      plugins:{
+        legend:{position:'top', labels:{color:'#e8eef7', font:{size:12}, usePointStyle:true}},
+        tooltip:{
+          backgroundColor:'#1a212b', borderColor:'#2d3847', borderWidth:1,
+          titleColor:'#ffb84d', bodyColor:'#e8eef7',
+          callbacks:{
+            title:(items)=> labels[items[0].dataIndex],
+            afterBody:(items)=>{
+              const i = items[0].dataIndex;
+              const lines = [];
+              if(stockArr[i]!==null) lines.push('在站: '+stockArr[i]+' 台');
+              if(capArr[i]!==null) lines.push('有效車位: '+capArr[i]);
+              return lines;
+            }
+          }
+        }
+      },
+      scales:{
+        x:{
+          ticks:{ color:'#8b9bb0', maxTicksLimit:24, autoSkip:true,
+            callback:function(v,i){ const l=labels[i]; return l && l.endsWith(':00') ? l.split(':')[0] : ''; } },
+          grid:{color:'#2d3847'}, title:{display:true, text:'時刻(每10分鐘)', color:'#8b9bb0'}
+        },
+        y:{ min:yMin, max:yMax, ticks:{color:'#8b9bb0', precision:0}, grid:{color:'#2d3847'},
+          title:{display:true, text:'車輛數', color:'#8b9bb0'} }
+      }
+    }
+  });
+}
+
 
 document.getElementById('collapseBtn').addEventListener('click', ()=>{
   const layout = document.getElementById('layoutEl');
