@@ -29,11 +29,6 @@ def fetch(endpoint, token):
     return resp.json()
 
 
-def snapshot_signature(stations):
-    items = sorted((s["id"], s["rent"], s["return"]) for s in stations)
-    return json.dumps(items, separators=(",", ":"))
-
-
 def main():
     token = get_token()
     now = datetime.now(TW_TZ)
@@ -50,8 +45,6 @@ def main():
                 "return": s.get("AvailableReturnBikes"),
             })
 
-    sig = snapshot_signature(stations)
-
     day_path = os.path.join("data", f"{date_str}.json")
     if os.path.exists(day_path):
         with open(day_path, encoding="utf-8") as f:
@@ -59,15 +52,9 @@ def main():
     else:
         day_records = []
 
-    if day_records:
-        if day_records[-1].get("_sig") == sig:
-            print(f"{time_str} no change, skip ({len(day_records)} records)")
-            return
-
     rec = {
         "time": time_str,
         "datetime": now.isoformat(),
-        "_sig": sig,
         "stations": {s["id"]: [s["rent"], s["return"]] for s in stations},
     }
     day_records.append(rec)
