@@ -145,6 +145,7 @@
 
 - 網頁版面與求解邏輯保持原樣；`index.html` 內嵌 CPS 分析作為分析與離線備援。
 - `scripts/sync_stations.py` 同步官方公開名單至 `data/stations.json`，營運(status 1)及暫停(status 2)都納入。採聯集合併，暫停、來源缺站均不得刪除既有站或歷史。
+- 公開名單介面對 GitHub 主機可能回403；使用既有 Actions TDX 認證，分頁讀取 Station + Availability 作為備援，不繞過封鎖、不在前端放憑證。TDX行政區/責任區缺值時保留CPS原值，新站標待確認/待設定，狀態不得無中生有；TDX status 0停止、1正常、2暫停均保留資料。
 - 名稱、行政區、容量可更新；CPS 責任區原值保留。新站未知責任區標「待設定」，沒有原始分析標「無歷史分析」，不得用 TDX 存量假造借還流量或建議解。
 - TDX 抓取全站，不依網頁名單篩選。`data/YYYY-MM-DD.json` 為全天快照陣列；`data/index.json` 為日期到 `{count, latest}`。只追加，不清除既有日期。
 - 保留原每10分鐘 cron；每輪6次、間隔50秒，實際頻率受 Actions 排程延遲影響。名單同步失敗仍抓 TDX，錯誤不得顯示為成功；工作流序列化且檔案原子寫入。

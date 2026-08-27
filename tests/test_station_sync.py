@@ -20,6 +20,13 @@ def station(code="500101003"):
             "first_seen_at": "2026-05-18T06:00:00+08:00", "last_seen_at": "2026-08-26T12:00:00+08:00"}
 
 
+def tdx_source(code="500101003", status=1, capacity=28):
+    return {"StationID": code, "StationUID": "TPE" + code,
+            "StationName": {"Zh_tw": "YouBike2.0_新站名"},
+            "BikesCapacity": capacity, "ServiceStatus": status,
+            "StationAddress": {"Zh_tw": "非行政區欄位"}}
+
+
 class RegistryTests(unittest.TestCase):
     def test_both_open_and_suspended_and_string_status_are_public(self):
         rows = sync_stations.normalize_source([source(), source("500201001", "2")])
@@ -109,6 +116,92 @@ class RegistryTests(unittest.TestCase):
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
+class TdxFallbackTests(unittest.TestCase):
+    def test_tdx_updates_metadata_and_status_without_overwriting_cps_fields(self):
+        previous = {"schema_version": 1, "stations": [station(), station("500101004")]}
+        previous["stations"][0]["deltas"] = [3] * 24
+        result, stats = sync_stations.merge_registry(
+            previous, [tdx_source(status=2, capacity=30), tdx_source("500201005", status=0)],
+            "now", source_kind="tdx")
+        rows = {s["code"]: s for s in result["stations"]}
+        self.assertEqual(rows["500101003"]["name"], "新站名")
+        self.assertEqual(rows["500101003"]["status"], 2)
+        self.assertEqual(rows["500101003"]["district"], "大安區")
+        self.assertEqual(rows["500101003"]["zone"], "ZB3")
+        self.assertEqual(rows["500101003"]["deltas"], [3] * 24)
+        self.assertEqual(rows["500201005"]["district"], "待確認")
+        self.assertEqual(rows["500201005"]["zone"], "待設定")
+        self.assertEqual(rows["500201005"]["status"], 0)
+        self.assertIn("500101004", rows)
+        self.assertEqual(stats["source_suspended"], 1)
+        self.assertEqual(stats["source_stopped"], 1)
+        self.assertEqual(result["source_urls"], sync_stations.TDX_URLS)
+
+    def test_missing_status_is_unknown_and_null_capacity_preserves_known_value(self):
+        rows = sync_stations.normalize_tdx_source(
+            [tdx_source(status=None, capacity=None), tdx_source("500201005", status=None)],
+            {"500101003": station()})
+        self.assertEqual(rows["500101003"]["capacity"], 28)
+        self.assertNotIn("status", rows["500201005"])
+
+    def test_unknown_new_capacity_is_not_invented_as_zero(self):
+        rows = sync_stations.normalize_tdx_source([tdx_source(), tdx_source("500201005", capacity=None)], {})
+        self.assertNotIn("500201005", rows)
+
+    def test_tdx_uid_fallback_is_strict_and_internal_codes_stay_excluded(self):
+        self.assertEqual(sync_stations.tdx_station_code({"StationUID": "NWT500201005"}), "500201005")
+        for uid in ("garbage500201005", "TPE500199001", "NWT500299001", "TPE123"):
+            self.assertIsNone(sync_stations.tdx_station_code({"StationUID": uid}))
+
+    def test_empty_duplicate_and_invalid_tdx_metadata_fail_closed(self):
+        for rows in ([], {}, [tdx_source(), tdx_source()], [tdx_source(capacity=-1)]):
+            with self.subTest(rows=rows), self.assertRaises(ValueError):
+                sync_stations.normalize_tdx_source(rows, {})
+
+    def test_later_cps_seed_can_fill_only_unknown_district_and_zone(self):
+        old = station()
+        old.update(district="待確認", zone="待設定")
+        result, _ = sync_stations.merge_registry(
+            {"schema_version": 1, "stations": [old]}, [tdx_source()], "now", [station()], "tdx")
+        self.assertEqual(result["stations"][0]["district"], "大安區")
+        self.assertEqual(result["stations"][0]["zone"], "ZB3")
+
+    def test_metadata_joins_real_availability_status_by_station_code(self):
+        responses = [
+            [tdx_source()], [{"StationUID": "TPE500101003", "ServiceStatus": 2}],
+            [tdx_source("500201005")], [{"StationID": "500201005", "ServiceStatus": 0}],
+        ]
+        with patch.object(fetch_tdx, "fetch", side_effect=responses) as fetch:
+            rows = fetch_tdx.station_metadata("authorized-token")
+        self.assertEqual([row["ServiceStatus"] for row in rows], [2, 0])
+        self.assertEqual(fetch.call_count, 4)
+        self.assertTrue(all(call.args[1] == "authorized-token" for call in fetch.call_args_list))
+
+    def test_primary_403_uses_authorized_fallback_and_still_captures(self):
+        with patch.object(fetch_tdx, "sync_station_registry", side_effect=[RuntimeError("403"), None]) as sync, \
+             patch.object(fetch_tdx, "get_token", return_value="test"), \
+             patch.object(fetch_tdx, "station_metadata", return_value=[tdx_source()]), \
+             patch.object(fetch_tdx, "SHOTS", 1), \
+             patch.object(fetch_tdx, "snapshot_once", return_value=[]), \
+             patch.object(fetch_tdx, "save_record") as save:
+            fetch_tdx.main()
+            self.assertEqual(sync.call_args.kwargs["source_kind"], "tdx")
+            save.assert_called_once()
+
+    def test_all_pages_are_read_so_new_stations_outside_first_page_are_not_missed(self):
+        with patch.object(fetch_tdx, "fetch", side_effect=[
+            [tdx_source(), tdx_source("500101004")], [tdx_source("500101005")]
+        ]) as fetch:
+            rows = fetch_tdx.fetch_all_station_rows("/station", "test", page_size=2)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(fetch.call_args.args[2]["$skip"], 2)
+
+    def test_repeated_page_fails_instead_of_looping_or_silently_truncating(self):
+        with patch.object(fetch_tdx, "fetch", return_value=[tdx_source()]):
+            with self.assertRaises(ValueError):
+                fetch_tdx.fetch_all_station_rows("/station", "test", page_size=1)
+
+
 class HistoryTests(unittest.TestCase):
     def test_append_unknown_and_suspended_station_without_losing_history(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
@@ -153,6 +246,7 @@ class HistoryTests(unittest.TestCase):
     def test_metadata_failure_still_collects_history_and_is_reported(self):
         with patch.object(fetch_tdx, "sync_station_registry", side_effect=RuntimeError("offline")), \
              patch.object(fetch_tdx, "get_token", return_value="test"), \
+             patch.object(fetch_tdx, "station_metadata", side_effect=RuntimeError("offline")), \
              patch.object(fetch_tdx, "SHOTS", 1), \
              patch.object(fetch_tdx, "snapshot_once", return_value=[{"id": "new", "rent": 2, "return": 8}]), \
              patch.object(fetch_tdx, "save_record") as save:

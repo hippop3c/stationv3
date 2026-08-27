@@ -6,9 +6,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 try:
-    from .sync_stations import atomic_write_json, sync_station_registry
+    from .sync_stations import atomic_write_json, sync_station_registry, tdx_station_code
 except ImportError:
-    from sync_stations import atomic_write_json, sync_station_registry
+    from sync_stations import atomic_write_json, sync_station_registry, tdx_station_code
 
 AUTH_URL = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
 BASE_URL = "https://tdx.transportdata.tw/api/basic"
@@ -29,11 +29,11 @@ def get_token():
     return resp.json()["access_token"]
 
 
-def fetch(endpoint, token):
+def fetch(endpoint, token, query=None):
     resp = requests.get(
         f"{BASE_URL}{endpoint}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-        params={"$format": "JSON"},
+        params={"$format": "JSON", **(query or {})},
         timeout=60,
     )
     resp.raise_for_status()
@@ -51,6 +51,42 @@ def snapshot_once(token):
                 "return": s.get("AvailableReturnBikes"),
             })
     return stations
+
+
+def fetch_all_station_rows(endpoint, token, page_size=1000):
+    rows, seen = [], set()
+    for offset in range(0, page_size * 30, page_size):
+        page = fetch(endpoint, token, {"$top": page_size, "$skip": offset, "$orderby": "StationID"})
+        if not isinstance(page, list) or any(not isinstance(row, dict) for row in page):
+            raise ValueError("Invalid TDX station page")
+        for row in page:
+            uid = row.get("StationUID") or row.get("StationID")
+            if uid and uid in seen:
+                raise ValueError("TDX pagination repeated a station; refusing a partial sync")
+            if uid:
+                seen.add(uid)
+        rows.extend(page)
+        if len(page) < page_size:
+            return rows
+    raise ValueError("TDX station pagination exceeded safety limit")
+
+
+def station_metadata(token):
+    """Official TDX fallback; reuse the already-authorized Actions credentials."""
+    rows = []
+    for city in ("Taipei", "NewTaipei"):
+        metadata = fetch_all_station_rows(f"/v2/Bike/Station/City/{city}", token)
+        availability = fetch_all_station_rows(f"/v2/Bike/Availability/City/{city}", token)
+        if not metadata or not availability:
+            raise ValueError(f"Empty TDX station/availability response for {city}")
+        statuses = {tdx_station_code(row): row.get("ServiceStatus") for row in availability}
+        for source_row in metadata:
+            row = dict(source_row)
+            code = tdx_station_code(row)
+            if code in statuses:
+                row["ServiceStatus"] = statuses[code]
+            rows.append(row)
+    return rows
 
 
 def save_record(now, stations):
@@ -103,8 +139,14 @@ def main():
     except Exception as exc:
         # Metadata errors must not interrupt capture of live observations.
         registry_failed = True
-        print(f"場站名單同步失敗，保留既有名單並繼續抓取: {exc}")
+        print(f"YouBike 公開名單暫時無法取得，改用已授權 TDX: {exc}")
     token = get_token()
+    if registry_failed:
+        try:
+            sync_station_registry(source_rows=station_metadata(token), source_kind="tdx")
+            registry_failed = False
+        except Exception as exc:
+            print(f"TDX 名單同步失敗，保留既有名單並繼續抓取: {exc}")
     print(f"連抓 {SHOTS} 次 (間隔 {INTERVAL}s)")
     saved = 0
 

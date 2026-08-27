@@ -45,8 +45,11 @@ test('invalid or duplicate registry cannot mutate the fallback roster', () => {
 
 test('unknown zone cannot erase a CPS responsibility zone', () => {
   const rows = [base()];
-  registry.merge(rows, [{...base(), zone:''}]);
-  assert.equal(rows[0].zone, 'ZB3');
+  for (const zone of ['', 'nan', '待設定', '待確認']) {
+    registry.merge(rows, [{...base(), zone, district:'待確認'}]);
+    assert.equal(rows[0].zone, 'ZB3');
+    assert.equal(rows[0].district, base().district);
+  }
 });
 
 test('metadata text is escaped before HTML rendering', () => {

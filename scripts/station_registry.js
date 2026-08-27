@@ -13,11 +13,11 @@ const StationRegistry = (() => {
     if (!['name', 'city', 'district'].every(k => typeof row[k] === 'string' && row[k].trim())) return null;
     const value = {code, capacity};
     for (const k of ['name', 'city', 'district']) value[k] = row[k].trim();
-    if (typeof row.zone === 'string' && row.zone.trim() && row.zone !== 'nan') value.zone = row.zone.trim();
+    if (typeof row.zone === 'string' && !['', 'nan', '待設定', '待確認'].includes(row.zone.trim())) value.zone = row.zone.trim();
     for (const k of ['first_seen_at', 'last_seen_at']) {
       if (typeof row[k] === 'string') value[k] = row[k];
     }
-    if ([1, 2].includes(Number(row.status))) value.status = Number(row.status);
+    if (row.status != null && [0, 1, 2].includes(Number(row.status))) value.status = Number(row.status);
     if (typeof row.source_present === 'boolean') value.source_present = row.source_present;
     return value;
   }
@@ -41,6 +41,7 @@ const StationRegistry = (() => {
         changed = true;
       }
       for (const field of fields) {
+        if (field === 'district' && incoming[field] === '待確認' && station.district && station.district !== '待確認') continue;
         if (incoming[field] !== undefined && station[field] !== incoming[field]) {
           station[field] = incoming[field];
           changed = true;
