@@ -141,6 +141,17 @@
 
 ---
 
+## 2026-08-27 名單自動同步更新（取代上述舊版即時資料架構）
+
+- 網頁版面與求解邏輯保持原樣；`index.html` 內嵌 CPS 分析作為分析與離線備援。
+- `scripts/sync_stations.py` 同步官方公開名單至 `data/stations.json`，營運(status 1)及暫停(status 2)都納入。採聯集合併，暫停、來源缺站均不得刪除既有站或歷史。
+- 名稱、行政區、容量可更新；CPS 責任區原值保留。新站未知責任區標「待設定」，沒有原始分析標「無歷史分析」，不得用 TDX 存量假造借還流量或建議解。
+- TDX 抓取全站，不依網頁名單篩選。`data/YYYY-MM-DD.json` 為全天快照陣列；`data/index.json` 為日期到 `{count, latest}`。只追加，不清除既有日期。
+- 保留原每10分鐘 cron；每輪6次、間隔50秒，實際頻率受 Actions 排程延遲影響。名單同步失敗仍抓 TDX，錯誤不得顯示為成功；工作流序列化且檔案原子寫入。
+- 網頁每6分鐘刷新；正式站直接讀本 repo `raw.githubusercontent.com/.../main/data`，避免依賴 bot 提交觸發 Pages 重建。保留選站、篩選、手動調度及手動選定的舊日期；45秒請求逾時後允許下一輪重試。
+- 新站自動進網頁並沿用所有可用觀測歷史。原內部維調據點保存於 `data/station_analysis_archive.json`，不混入公開站清單。
+- 修改後執行 `python -m unittest discover -s tests -p 'test_*.py'` 與 `node --test tests/*.test.cjs`。
+
 ## 開發慣例
 - 版本命名：HTML 檔名加 _vN，每次改動遞增（v11、v12...）。
 - 純視覺/介面調整不改求解結果；只有「換資料期間、改取整方式、改判定邏輯、改是否納入調度/綁車」才會改變分級。
