@@ -71,7 +71,27 @@ const StationRegistry = (() => {
     return hour < 24 && minute < 60 ? hour * 6 + Math.floor(minute / 10) : -1;
   }
 
-  return {merge, escapeHtml, observation, timeBucket};
+  function stationCode(id) {
+    const match = String(id || '').match(/(500[12]\d{5})$/);
+    return match ? match[1] : '';
+  }
+
+  function findObservation(stations, code) {
+    if (!stations || typeof stations !== 'object') return undefined;
+    const target = stationCode(code);
+    if (!target) return undefined;
+    if (Object.prototype.hasOwnProperty.call(stations, target)) return stations[target];
+    for (const prefix of ['TPE', 'NWT']) {
+      const key = prefix + target;
+      if (Object.prototype.hasOwnProperty.call(stations, key)) return stations[key];
+    }
+    for (const [id, value] of Object.entries(stations)) {
+      if (stationCode(id) === target) return value;
+    }
+    return undefined;
+  }
+
+  return {merge, escapeHtml, observation, timeBucket, stationCode, findObservation};
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = StationRegistry;

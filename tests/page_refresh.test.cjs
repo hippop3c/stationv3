@@ -132,54 +132,82 @@ test('new and suspended station metadata updates filters without resetting analy
   assert.equal(app.value('getFilteredStations().length'), 1);
 });
 
-test('date index refresh preserves the selected historical date', async () => {
-  const app = page({fetch: async () => response({'2026-08-26': {count: 2}, '2026-08-27': {count: 3}})});
-  app.element('dateSelect').value = '2026-08-26';
+test('date index refresh preserves every selected date and its checkbox UI', async () => {
+  const app = page({fetch: async () => response({
+    '2026-08-26': {count: 2, buckets: 2},
+    '2026-08-27': {count: 3, buckets: 3},
+    '2026-08-28': {count: 4, buckets: 4}
+  })});
+  app.run("selectedDates=['2026-08-26','2026-08-27']");
   await app.run('loadDateIndex()');
-  assert.equal(app.element('dateSelect').value, '2026-08-26');
-  assert.deepEqual(app.value('availableDates'), ['2026-08-26', '2026-08-27']);
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-26', '2026-08-27']);
+  assert.deepEqual(app.value('availableDates'), ['2026-08-26', '2026-08-27', '2026-08-28']);
+  assert.equal(app.element('datePickerButton').textContent, '已選 2 個日期');
+  assert.equal(app.element('datePickerButton').title, '2026-08-26、2026-08-27');
+  assert.match(app.element('dateOptions').innerHTML, /data-date="2026-08-26" checked/);
+  assert.match(app.element('dateOptions').innerHTML, /data-date="2026-08-27" checked/);
+  assert.match(app.element('dateOptions').innerHTML, /4\/144 時段/);
 });
 
-test('late historical responses cannot override a newer date selection', async () => {
-  const firstBody = deferred();
-  const app = page({fetch: async url => url.includes('2026-08-26')
-    ? {ok: true, json: () => firstBody.promise}
-    : response([snapshot('2026-08-27', '08:00')])});
-  const earlier = app.run("loadReplay('2026-08-26')");
-  await app.run("loadReplay('2026-08-27')");
-  firstBody.resolve([snapshot('2026-08-26', '06:00')]);
+test('late multi-date responses cannot override a newer selection', async () => {
+  const first = deferred(), second = deferred();
+  const app = page({fetch: async url => {
+    if(url.includes('2026-08-26')) return {ok: true, json: () => first.promise};
+    if(url.includes('2026-08-27')) return {ok: true, json: () => second.promise};
+    return response([snapshot('2026-08-28', '08:00', 8)]);
+  }});
+  const earlier = app.run("loadReplays(['2026-08-26','2026-08-27'])");
+  await app.run("loadReplays(['2026-08-28'])");
+  first.resolve([snapshot('2026-08-26', '06:00', 6)]);
+  second.resolve([snapshot('2026-08-27', '07:00', 7)]);
   await earlier;
-  assert.equal(app.value('replayData.date'), '2026-08-27');
-  assert.equal(app.value('selectedDate'), '2026-08-27');
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-28']);
+  assert.deepEqual(app.value('[...replayDataByDate.keys()]'), ['2026-08-28']);
+  assert.equal(app.value("replayDataByDate.get('2026-08-28').records[0].stations.TPE500101003[0]"), 8);
   assert.equal(app.timers.size, 0);
 });
 
-test('latest records refresh the live curve and follow it across midnight', async () => {
+test('one failed day does not prevent other selected days from loading', async () => {
+  const app = page({fetch: async url => url.includes('2026-08-27')
+    ? unavailable()
+    : response([snapshot('2026-08-26', '06:00', 6)])});
+  await app.run("loadReplays(['2026-08-26','2026-08-27'])");
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-26', '2026-08-27']);
+  assert.deepEqual(app.value('[...replayDataByDate.keys()]'), ['2026-08-26']);
+  assert.equal(app.value('lineVisible.replay'), true);
+  assert.equal(app.requests.filter(request => request.url.includes('2026-08-27')).length, 3);
+});
+
+test('follow latest replaces the followed day when records cross midnight', async () => {
   let date = '2026-08-27', time = '23:59';
   const app = page({fetch: async url => response(url.includes('index.json')
     ? {'2026-08-27': {count: 1}, ...(date === '2026-08-28' ? {'2026-08-28': {count: 1}} : {})}
-    : [snapshot(date, time)])});
-  app.run("setViewMode('live')"); // Also works before the date index arrives.
+    : [snapshot(url.includes('2026-08-28') ? '2026-08-28' : '2026-08-27', time)])});
+  await app.run("loadReplays(['2026-08-27'], {followLatest:true})");
   await app.run('loadLatest()');
-  assert.equal(app.value('replayData.records[0].time'), '23:59');
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-27']);
+  assert.deepEqual(app.value('[...replayDataByDate.keys()]'), ['2026-08-27']);
   date = '2026-08-28'; time = '00:01';
   await app.run('loadLatest()');
-  assert.equal(app.value('replayData.date'), date);
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-28']);
+  assert.deepEqual(app.value('[...replayDataByDate.keys()]'), ['2026-08-28']);
   assert.equal(app.value('liveData.time'), time);
-  assert.equal(app.element('dateSelect').value, date);
+  assert.match(app.value('liveData.datetime'), /^2026-08-28/);
+  assert.equal(app.element('datePickerButton').textContent, date);
 });
 
-test('automatic refresh does not jump away from a manually selected old day', async () => {
+test('automatic refresh preserves a manual multi-date selection', async () => {
   const app = page({fetch: async url => response(url.includes('index.json')
-    ? {'2026-08-26': {count: 1}, '2026-08-27': {count: 1}}
-    : [snapshot(url.includes('2026-08-26') ? '2026-08-26' : '2026-08-27', '12:00')])});
-  app.element('dateSelect').value = '2026-08-26';
-  await app.run("loadReplay('2026-08-26')");
-  await app.run('loadLatest()');
-  assert.equal(app.value('replayData.date'), '2026-08-26');
-  assert.equal(app.value('selectedDate'), '2026-08-26');
-  assert.equal(app.element('dateSelect').value, '2026-08-26');
-  assert.match(app.value('liveData.datetime'), /^2026-08-27/);
+    ? {'2026-08-26': {count: 1}, '2026-08-27': {count: 1}, '2026-08-28': {count: 1}}
+    : [snapshot(url.includes('2026-08-26') ? '2026-08-26'
+      : url.includes('2026-08-27') ? '2026-08-27' : '2026-08-28', '12:00')])});
+  await app.run("loadReplays(['2026-08-26','2026-08-27'])");
+  await app.run('refreshData()');
+  assert.deepEqual(app.value('selectedDates'), ['2026-08-26', '2026-08-27']);
+  assert.deepEqual(app.value('[...replayDataByDate.keys()]'), ['2026-08-26', '2026-08-27']);
+  assert.equal(app.value('followLatest'), false);
+  assert.match(app.value('liveData.datetime'), /^2026-08-28/);
+  assert.equal(app.element('datePickerButton').textContent, '已選 2 個日期');
 });
 
 test('refresh requests coalesce, then retry after a timed-out registry request', async () => {
@@ -202,19 +230,35 @@ test('refresh requests coalesce, then retry after a timed-out registry request',
   assert.equal(app.value('STATIONS.length'), 3387);
 });
 
-test('live chart keeps 23:59, actual zeros, missing values and latest values in each bucket', () => {
+test('live chart draws one gap-preserving line for every selected date', () => {
   const app = page();
-  app.context.testRecords = [
-    snapshot('2026-08-27', '23:59', 9), snapshot('2026-08-27', '23:55', 5),
-    {...snapshot('2026-08-27', '00:00'), stations: {TPE500101003: [0, 0]}},
-    {...snapshot('2026-08-27', '01:00'), stations: {TPE500101003: [null, null]}}
+  app.context.firstDay = [
+    snapshot('2026-08-26', '00:00', 0), snapshot('2026-08-26', '00:20', 7),
+    snapshot('2026-08-26', '23:59', 9), snapshot('2026-08-26', '23:55', 5)
   ];
-  app.run("replayData={date:'2026-08-27',records:testRecords}; drawLiveChart(stationByCode['500101003'])");
-  const data = app.charts.at(-1).data;
+  app.context.secondDay = [snapshot('2026-08-27', '00:10', 4)];
+  app.run("liveLineVisible={stock:true,capacity:false,zero:false}; replayDataByDate=new Map([['2026-08-26',{date:'2026-08-26',records:firstDay}],['2026-08-27',{date:'2026-08-27',records:secondDay}]]); drawLiveChart(stationByCode['500101003'])");
+  const data = app.charts.at(-1).data, lines = data.datasets.filter(dataset => dataset.label.startsWith('在站 '));
   assert.equal(data.labels.length, 144);
-  assert.equal(data.datasets[0].data[143], 9);
-  assert.equal(data.datasets[0].data[0], 0);
-  assert.equal(data.datasets[1].data[0], 0);
-  assert.equal(data.datasets[0].data[6], null);
-  assert.equal(data.datasets[1].data[6], null);
+  assert.deepEqual(Array.from(lines, dataset => dataset.label), ['在站 2026-08-26', '在站 2026-08-27']);
+  assert.equal(lines[0].spanGaps, false);
+  assert.equal(lines[1].spanGaps, false);
+  assert.deepEqual(Array.from(lines[0].data.slice(0, 3)), [0, null, 7]);
+  assert.deepEqual(Array.from(lines[1].data.slice(0, 3)), [null, 4, null]);
+  assert.equal(lines[0].data[143], 9);
+  assert.notEqual(lines[0].borderColor, lines[1].borderColor);
+});
+
+test('main analysis chart draws one independent replay line for every selected date', () => {
+  const app = page();
+  app.context.firstDay = [snapshot('2026-08-26', '06:00', 5), snapshot('2026-08-26', '08:00', 8)];
+  app.context.secondDay = [snapshot('2026-08-27', '07:00', 6)];
+  app.run("lineVisible={people:false,dispatch:false,stock:false,live:false,replay:true,capacity:false,zero:false}; replayDataByDate=new Map([['2026-08-26',{date:'2026-08-26',records:firstDay}],['2026-08-27',{date:'2026-08-27',records:secondDay}]]); drawChart(stationByCode['500101003'], getState('500101003'))");
+  const lines = app.charts.at(-1).data.datasets.filter(dataset => dataset.label.startsWith('在站 '));
+  assert.deepEqual(Array.from(lines, dataset => dataset.label), ['在站 2026-08-26', '在站 2026-08-27']);
+  assert.equal(lines[0].spanGaps, false);
+  assert.equal(lines[1].spanGaps, false);
+  assert.deepEqual(Array.from(lines[0].data.slice(0, 3)), [5, null, 8]);
+  assert.deepEqual(Array.from(lines[1].data.slice(0, 3)), [null, 6, null]);
+  assert.notEqual(lines[0].borderColor, lines[1].borderColor);
 });

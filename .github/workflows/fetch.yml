@@ -9,7 +9,9 @@ on:
       - tests/**
       - .github/workflows/fetch.yml
   schedule:
-    - cron: '5,15,25,35,45,55 * * * *'
+    # GitHub frequently drops very high-frequency scheduled workflows.  Run
+    # one hourly collector and let it take six evenly spaced 10-minute shots.
+    - cron: '7 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -22,6 +24,7 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 65
     steps:
       - name: 取出 repo
         uses: actions/checkout@v4
@@ -44,6 +47,9 @@ jobs:
         env:
           TDX_CLIENT_ID: ${{ secrets.TDX_CLIENT_ID }}
           TDX_CLIENT_SECRET: ${{ secrets.TDX_CLIENT_SECRET }}
+          TDX_SHOTS: '6'
+          TDX_INTERVAL_SECONDS: '600'
+          TDX_RETRIES: '3'
         run: python scripts/fetch_tdx.py
 
       - name: Commit 資料

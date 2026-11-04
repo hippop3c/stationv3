@@ -49,6 +49,30 @@ h1{
   padding:6px 10px;border-radius:5px;font-size:12px;font-family:inherit;width:100%;
 }
 .search-bar input:focus,.search-bar select:focus{outline:none;border-color:var(--accent)}
+.date-picker{position:relative;min-width:0}
+.date-picker-btn{
+  width:100%;background:var(--bg);border:1px solid var(--line);color:var(--text);
+  padding:6px 10px;border-radius:5px;font-size:12px;font-family:inherit;
+  cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+}
+.date-picker-btn:focus,.date-picker.open .date-picker-btn{outline:none;border-color:var(--accent)}
+.date-menu{
+  position:absolute;right:0;top:calc(100% + 6px);z-index:60;width:260px;max-width:90vw;
+  background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  box-shadow:0 14px 34px rgba(0,0,0,.45);padding:8px
+}
+.date-menu[hidden]{display:none}
+.date-actions{display:flex;gap:6px;margin-bottom:7px}
+.date-actions button{
+  flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--text);
+  border-radius:5px;padding:5px 8px;font:inherit;font-size:11px;cursor:pointer
+}
+.date-actions button:hover{border-color:var(--accent);color:var(--accent)}
+.date-options{max-height:300px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.date-option{display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:5px;font-size:11px;cursor:pointer}
+.date-option:hover{background:var(--panel-2)}
+.date-option input{width:auto;margin:0;accent-color:var(--accent-2)}
+.date-option .coverage{margin-left:auto;color:var(--muted);font-size:10px}
 .filter-tags{display:flex;gap:6px;margin-bottom:0;flex-wrap:wrap;font-size:11px;color:var(--muted);align-items:center;flex:1}
 .filter-tag{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:4px 10px;display:inline-flex;align-items:center;gap:6px;color:var(--text)}
 .filter-tag .x{cursor:pointer;color:var(--muted);font-weight:bold}
@@ -271,7 +295,16 @@ h1{
     <option value="最後解">最後解</option>
     <option value="無歷史分析">無歷史分析</option>
   </select>
-  <select id="dateSelect"><option value="">選擇回放日期…</option></select>
+  <div class="date-picker" id="datePicker">
+    <button type="button" class="date-picker-btn" id="datePickerButton" aria-expanded="false">選擇回放日期…</button>
+    <div class="date-menu" id="dateMenu" hidden>
+      <div class="date-actions">
+        <button type="button" id="dateLatest">只選最新</button>
+        <button type="button" id="dateClear">清除日期</button>
+      </div>
+      <div class="date-options" id="dateOptions"></div>
+    </div>
+  </div>
 </div>
 <div id="liveTime" style="font-size:11px;color:#60a5fa;margin-bottom:8px"></div>
 <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;flex-shrink:0">
@@ -297,15 +330,22 @@ STATIONS.forEach(s => { stationByCode[s.code] = s; });
 
 // 名單僅新增或更新基本資訊，不覆寫 CPS 分析或使用者手動調度。
 async function fetchDataFile(filename){
-  const controller = new AbortController();
-  const timer = setTimeout(()=>controller.abort(), 45000);
-  try {
-    const response = await fetch(`${DATA_BASE}/${filename}?t=${Date.now()}`, {
-      cache:'no-store', signal:controller.signal
-    });
-    if(!response.ok) throw new Error(`資料讀取失敗: ${filename} (${response.status})`);
-    return await response.json();
-  } finally { clearTimeout(timer); }
+  let lastError;
+  for(let attempt=0; attempt<3; attempt++){
+    const controller = new AbortController();
+    const timer = setTimeout(()=>controller.abort(), 45000);
+    try {
+      const response = await fetch(`${DATA_BASE}/${filename}?t=${Date.now()}-${attempt}`, {
+        cache:'no-store', signal:controller.signal
+      });
+      if(!response.ok) throw new Error(`資料讀取失敗: ${filename} (${response.status})`);
+      return await response.json();
+    } catch(e){
+      lastError = e;
+      if(e && (e.name === 'AbortError' || /timed out/i.test(String(e.message||e)))) throw e;
+    } finally { clearTimeout(timer); }
+  }
+  throw lastError || new Error(`資料讀取失敗: ${filename}`);
 }
 
 async function loadStationRegistry(){
@@ -331,71 +371,147 @@ function renderDataTime(){
   document.getElementById('liveTime').textContent = parts.join(' ｜ ');
 }
 
-// 載入可用日期清單 (新結構: index.json = {date:{count,latest}})
+function dateColor(date){
+  let hash = 0;
+  for(const ch of String(date||'')) hash = ((hash * 31) + ch.charCodeAt(0)) >>> 0;
+  return DATE_COLORS[hash % DATE_COLORS.length];
+}
+
+function renderDatePicker(){
+  const button = document.getElementById('datePickerButton');
+  const options = document.getElementById('dateOptions');
+  if(button){
+    button.textContent = selectedDates.length === 0 ? '選擇回放日期…'
+      : selectedDates.length === 1 ? selectedDates[0]
+      : `已選 ${selectedDates.length} 個日期`;
+    button.title = selectedDates.join('、');
+  }
+  if(!options) return;
+  options.innerHTML = [...availableDates].reverse().map(date=>{
+    const meta = dateIndexMeta[date] || {};
+    const buckets = Number(meta.buckets);
+    const info = Number.isFinite(buckets)
+      ? `${buckets}/144 時段`
+      : `${Number(meta.count)||0}筆`;
+    return `<label class="date-option"><input type="checkbox" data-date="${date}" ${selectedDates.includes(date)?'checked':''}><span style="color:${dateColor(date)}">●</span><span>${date}</span><span class="coverage">${info}</span></label>`;
+  }).join('');
+  options.querySelectorAll?.('input[data-date]').forEach(input=>{
+    input.addEventListener('change', ()=>{
+      const next = new Set(selectedDates);
+      if(input.checked) next.add(input.dataset.date); else next.delete(input.dataset.date);
+      loadReplays([...next]);
+    });
+  });
+}
+
+function setDateMenu(open){
+  const picker = document.getElementById('datePicker');
+  const menu = document.getElementById('dateMenu');
+  const button = document.getElementById('datePickerButton');
+  if(!menu || !button) return;
+  menu.hidden = !open;
+  button.setAttribute?.('aria-expanded', String(open));
+  picker?.classList.toggle('open', open);
+}
+
+// 載入可用日期清單 (index.json = {date:{count,buckets,coverage,latest}})
 async function loadDateIndex(){
   try {
     const idx = await fetchDataFile('index.json');
+    dateIndexMeta = idx && typeof idx === 'object' ? idx : {};
     availableDates = Object.keys(idx).filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-    const sel = document.getElementById('dateSelect');
-    if(sel){
-      const current = sel.value;
-      sel.innerHTML = '<option value="">選擇回放日期…</option>' +
-        availableDates.map(d=>`<option value="${d}">${d} (${Number(idx[d].count)||0}筆)</option>`).join('');
-      sel.value = availableDates.includes(current) ? current : '';
-    }
+    selectedDates = selectedDates.filter(date=>availableDates.includes(date));
+    renderDatePicker();
     return idx;
   } catch(e){ console.log('無 index.json 或載入失敗:', e); }
 }
 
-// 載入最新即時快照 (取最後一天檔案的最後一筆)
+function latestRecord(records){
+  return records.reduce((latest, record)=>{
+    if(!latest) return record;
+    return String(record.datetime||record.time||'') > String(latest.datetime||latest.time||'') ? record : latest;
+  }, null);
+}
+
+// 載入最新即時快照；若最新索引已先發布而日檔尚未同步，往前回退最多三天。
 async function loadLatest(){
   try {
     const idx = await loadDateIndex();
     if(!idx) return;
-    const dates = availableDates;
-    if(!dates.length) return;
-    const lastDate = dates[dates.length-1];
-    const records = await fetchDataFile(`${lastDate}.json`);
-    if(!Array.isArray(records)) throw new Error('不正確的歷史資料格式');
-    if(!records.length) return;
-    const last = records[records.length-1];
+    if(!availableDates.length) return;
+    let lastDate = null, records = null;
+    for(const date of availableDates.slice(-3).reverse()){
+      try {
+        const candidate = await fetchDataFile(`${date}.json`);
+        if(Array.isArray(candidate) && candidate.length){ lastDate=date; records=candidate; break; }
+      } catch(e){ console.log('最新日檔尚未可用，改讀前一日:', date, e); }
+    }
+    if(!lastDate || !records) return;
+    const last = latestRecord(records);
+    if(!last || !last.stations) return;
     // stations: {id: [rent, return]}
     const rentMap = {}, returnMap = {};
     for(const id in last.stations){
       const value = StationRegistry.observation(last.stations[id]);
-      rentMap[id] = value.rent;
-      returnMap[id] = value.availableReturn;
+      const code = StationRegistry.stationCode(id);
+      if(!code) continue;
+      rentMap[code] = value.rent;
+      returnMap[code] = value.availableReturn;
     }
     liveData = { datetime: last.datetime, time: last.time, stations: rentMap, returns: returnMap };
-    // 即時曲線使用 replayData；最新日期持續刷新，手動選的舊日期不跳轉。
-    if(followLatest || selectedDate === lastDate){
+    // 追蹤最新日時跨日移動；手動複選則只更新其中的最新日，不清除其他日期。
+    if(followLatest){
       replayRequestId++;
-      selectedDate = lastDate;
-      replayData = {date:lastDate, records};
-      document.getElementById('dateSelect').value = lastDate;
+      selectedDates = [lastDate];
+      replayDataByDate = new Map([[lastDate, {date:lastDate, records}]]);
+      replayCache.set(lastDate, records);
+      lineVisible.replay = true;
+    } else if(selectedDates.includes(lastDate)){
+      replayDataByDate.set(lastDate, {date:lastDate, records});
+      replayCache.set(lastDate, records);
     }
+    renderDatePicker();
     renderDataTime();
   } catch(e){ console.log('即時資料載入失敗:', e); }
 }
 
-// 載入指定日期全天資料 (新結構: 每日一檔, 陣列)
-async function loadReplay(date, options={}){
+// 載入多個日期；單日失敗不影響其他日期，較晚的選擇不會被舊請求覆蓋。
+async function loadReplays(dates, options={}){
   const requestId = ++replayRequestId;
-  selectedDate = date || null;
+  selectedDates = [...new Set((dates||[]).filter(date=>availableDates.length===0 || availableDates.includes(date)))].sort();
   followLatest = options.followLatest === true;
-  if(!date){ replayData = null; renderDetail(); return; }
-  try {
-    const records = await fetchDataFile(`${date}.json`);
-    if(requestId !== replayRequestId || selectedDate !== date) return;
-    if(!Array.isArray(records)) throw new Error('不正確的歷史資料格式');
-    // records: [{time, datetime, stations:{id:[rent,return]}}, ...]
-    replayData = { date, records };
-    selectedDate = date;
+  renderDatePicker();
+  if(!selectedDates.length){
+    replayDataByDate = new Map();
+    lineVisible.replay = false;
     renderDetail();
-  } catch(e){
-    if(requestId === replayRequestId){ replayData = null; renderDetail(); }
-    console.log('回放資料載入失敗:', e);
+    return;
   }
+  const requested = [...selectedDates];
+  const results = await Promise.allSettled(requested.map(async date=>{
+    if(replayCache.has(date)) return {date, records:replayCache.get(date)};
+    const records = await fetchDataFile(`${date}.json`);
+    if(!Array.isArray(records)) throw new Error(`不正確的歷史資料格式: ${date}`);
+    replayCache.set(date, records);
+    return {date, records};
+  }));
+  if(requestId !== replayRequestId) return;
+  const next = new Map();
+  results.forEach((result, index)=>{
+    const date = requested[index];
+    if(result.status === 'fulfilled') next.set(date, result.value);
+    else if(replayDataByDate.has(date)) next.set(date, replayDataByDate.get(date));
+    else console.log('回放資料載入失敗:', date, result.reason);
+  });
+  replayDataByDate = next;
+  lineVisible.replay = next.size > 0;
+  renderDatePicker();
+  renderDetail();
+}
+
+// 保留單日期呼叫介面，供既有書籤與測試相容。
+function loadReplay(date, options={}){
+  return loadReplays(date ? [date] : [], options);
 }
 
 // ===================================================================
@@ -478,14 +594,17 @@ let lineVisible = {
 };
 let chartMode = 'segmented';
 // 即時/回放資料 (從 data/ 載入)
-let liveData = null;       // {datetime, stations:{id:rent}}  最新一筆
-let replayData = null;     // {date, hourly:{hour:{id:rent}}}  選定日期全天
-let availableDates = [];   // 可選日期清單
-let selectedDate = null;
+let liveData = null;       // {datetime, stations:{code:rent}} 最新一筆
+let replayDataByDate = new Map(); // date -> {date, records}
+let replayCache = new Map();
+let availableDates = [];
+let selectedDates = [];
+let dateIndexMeta = {};
 let followLatest = false;
 let replayRequestId = 0;
 let stationRegistryUpdatedAt = '';
 let dataRefreshInFlight = null;
+const DATE_COLORS = ['#f0883e','#5dd3b3','#60a5fa','#a78bfa','#f472b6','#facc15','#22d3ee','#fb7185','#84cc16','#c084fc','#fb923c','#2dd4bf'];
 // GITHUB_TOKEN 的資料提交不會觸發 Pages 重建，正式站直接讀 Git 最新資料。
 // 本地預覽仍使用 checkout 中的 data/，不需要認證或瀏覽器儲存。
 const DATA_BASE = location.hostname === 'hippop3c.github.io'
@@ -653,6 +772,35 @@ function renderAll(){
 }
 
 // ===== 圖表繪製 =====
+function observationFor(stations, code){
+  const raw = StationRegistry.findObservation(stations, code);
+  return raw === undefined ? {rent:null, availableReturn:null, capacity:null} : StationRegistry.observation(raw);
+}
+
+function hourlyRent(records, code){
+  const result = {};
+  [...(records||[])].sort((a,b)=>String(a.datetime||a.time||'').localeCompare(String(b.datetime||b.time||''))).forEach(record=>{
+    const hour = Number.parseInt(String(record.time||'').split(':')[0], 10);
+    if(!Number.isFinite(hour)) return;
+    const value = observationFor(record.stations, code);
+    if(value.rent !== null) result[hour] = value.rent;
+  });
+  return result;
+}
+
+function bucketSeries(records, code){
+  const stock = new Array(144).fill(null);
+  const capacity = new Array(144).fill(null);
+  [...(records||[])].sort((a,b)=>String(a.datetime||a.time||'').localeCompare(String(b.datetime||b.time||''))).forEach(record=>{
+    const index = StationRegistry.timeBucket(record.time);
+    if(index < 0 || index >= 144) return;
+    const value = observationFor(record.stations, code);
+    if(value.rent !== null) stock[index] = value.rent;
+    if(value.capacity !== null) capacity[index] = value.capacity;
+  });
+  return {stock, capacity};
+}
+
 function drawChart(s, st){
   const C = s.capacity;
   const labels = [];
@@ -686,13 +834,8 @@ function drawChart(s, st){
   let effCap = C;
   let effCapIsLive = false;
   if(liveData && liveData.returns){
-    let rent = liveData.stations[s.code];
-    let ret = liveData.returns[s.code];
-    if(rent === undefined){
-      for(const k in liveData.stations){
-        if(k.endsWith(s.code) || k.includes(s.code)){ rent = liveData.stations[k]; ret = liveData.returns[k]; break; }
-      }
-    }
+    const rent = liveData.stations[s.code];
+    const ret = liveData.returns[s.code];
     if(rent !== undefined && rent !== null && ret !== undefined && ret !== null){
       effCap = rent + ret;
       effCapIsLive = true;
@@ -705,13 +848,8 @@ function drawChart(s, st){
   // 先算 effCap (與 drawChart 一致)
   let _effCap = C;
   if(liveData && liveData.returns){
-    let rent = liveData.stations[s.code];
-    let ret = liveData.returns[s.code];
-    if(rent === undefined){
-      for(const k in liveData.stations){
-        if(k.endsWith(s.code) || k.includes(s.code)){ rent = liveData.stations[k]; ret = liveData.returns[k]; break; }
-      }
-    }
+    const rent = liveData.stations[s.code];
+    const ret = liveData.returns[s.code];
     if(rent !== undefined && rent !== null && ret !== undefined && ret !== null) _effCap = rent + ret;
   }
   if(lineVisible.capacity) allVals.push(_effCap);
@@ -726,13 +864,10 @@ function drawChart(s, st){
     let rent = liveData.stations[s.code];
     if(rent !== undefined && rent !== null) allVals.push(rent);
   }
-  if(lineVisible.replay && replayData && replayData.records){
-    replayData.records.forEach(rec=>{
-      let arr = rec.stations[s.code];
-      if(arr === undefined){
-        for(const k in rec.stations){ if(k.endsWith(s.code)||k.includes(s.code)){ arr=rec.stations[k]; break; } }
-      }
-      if(arr !== undefined && arr[0] !== null) allVals.push(arr[0]);
+  if(lineVisible.replay){
+    replayDataByDate.forEach(entry=>{
+      const values = hourlyRent(entry.records, s.code);
+      Object.values(values).forEach(value=>allVals.push(value));
     });
   }
   // 上下界各往外加 10, 並取整數
@@ -771,41 +906,21 @@ function drawChart(s, st){
         // 即時在站車輛數 (TDX 最新一筆, 單一水平點/線)
         if(lineVisible.live && liveData){
           const code = s.code;
-          // TDX 的 id 可能是 StationUID, 嘗試用 code 或帶前綴比對
-          let rent = liveData.stations[code];
-          if(rent === undefined){
-            // 嘗試常見前綴 (YouBike2.0 UID 格式)
-            for(const k in liveData.stations){
-              if(k.endsWith(code) || k.includes(code)){ rent = liveData.stations[k]; break; }
-            }
-          }
+          const rent = liveData.stations[code];
           if(rent !== undefined && rent !== null){
             // 畫成一條水平線(整天同值), 代表「目前」在站數
             const liveLine = labels.map(()=>rent);
             ds.push({label:'即時在站('+rent+'台 '+(liveData.time||'')+')', data:liveLine, borderColor:'#60a5fa', borderWidth:2, borderDash:[2,2], pointRadius:0, fill:false, tension:0});
           }
         }
-        // 當日回放: 每筆 record(約6分鐘間隔)的在站車輛數
-        // 為對應主圖的整點 X 軸(6..23), 每個整點取「該小時最後一筆 record」的值
-        if(lineVisible.replay && replayData && replayData.records){
-          const code = s.code;
-          const hourVal = {}; // h -> rent (該小時最後一筆)
-          replayData.records.forEach(rec=>{
-            const hh = parseInt((rec.time||'').split(':')[0]);
-            if(isNaN(hh)) return;
-            let arr = rec.stations[code];
-            if(arr === undefined){
-              for(const k in rec.stations){
-                if(k.endsWith(code) || k.includes(code)){ arr = rec.stations[k]; break; }
-              }
-            }
-            if(arr !== undefined) hourVal[hh] = arr[0]; // [rent, return] 取 rent
+        // 每個已選日期各一條線；缺測時段保留 null，禁止跨缺口連線。
+        if(lineVisible.replay){
+          replayDataByDate.forEach((entry, date)=>{
+            const values = hourlyRent(entry.records, s.code);
+            const replayLine = labels.map((_, index)=>values[index+6] ?? null);
+            const color = dateColor(date);
+            ds.push({label:`在站 ${date}`, data:replayLine, borderColor:color, backgroundColor:color+'22', borderWidth:3, pointRadius:4, pointHoverRadius:7, pointBackgroundColor:color, fill:false, tension:0.15, spanGaps:false});
           });
-          const replayLine = labels.map((_, i)=>{
-            const h = i + 6;
-            return (hourVal[h] === undefined) ? null : hourVal[h];
-          });
-          ds.push({label:'當日在站('+replayData.date+')', data:replayLine, borderColor:'#f0883e', backgroundColor:'#f0883e22', borderWidth:3, pointRadius:4, pointHoverRadius:7, pointBackgroundColor:'#f0883e', fill:false, tension:0.15, spanGaps:true});
         }
         // 0 線
         if(lineVisible.zero){
@@ -1045,7 +1160,7 @@ function renderDetail(){
             <label class="line-toggle ${lineVisible.dispatch?'on':''}" data-line="dispatch"><span class="sw" style="background:#a78bfa"></span>調度行為</label>
             <label class="line-toggle ${lineVisible.stock?'on':''}" data-line="stock"><span class="sw" style="background:#5dd3b3"></span>在站車輛數</label>
             <label class="line-toggle ${lineVisible.live?'on':''}" data-line="live"><span class="sw" style="background:#60a5fa"></span>即時在站</label>
-            <label class="line-toggle ${lineVisible.replay?'on':''}" data-line="replay"><span class="sw" style="background:#f0883e"></span>當日回放</label>
+            <label class="line-toggle ${lineVisible.replay?'on':''}" data-line="replay"><span class="sw" style="background:#f0883e"></span>日期回放</label>
             <label class="line-toggle ${lineVisible.capacity?'on':''}" data-line="capacity"><span class="sw" style="background:#ff6b6b"></span>車位上限</label>
             <label class="line-toggle ${lineVisible.zero?'on':''}" data-line="zero"><span class="sw" style="background:#ffb84d"></span>0 線</label>
           `}
@@ -1192,12 +1307,10 @@ function setViewMode(m){
   document.getElementById('modeAnalysis').classList.toggle('active', m==='analysis');
   document.getElementById('modeLive').classList.toggle('active', m==='live');
   // 即時模式預設載入今天日期資料
-  if(m==='live' && !replayData){
+  if(m==='live' && replayDataByDate.size===0){
     followLatest = true;
     const today = availableDates.length ? availableDates[availableDates.length-1] : null;
     if(today){
-      const sel = document.getElementById('dateSelect');
-      if(sel) sel.value = today;
       loadReplay(today, {followLatest:true});
       return;
     }
@@ -1209,45 +1322,26 @@ function setViewMode(m){
 function drawLiveChart(s){
   const labels = [];
   for(let h=0; h<24; h++) for(let m=0; m<60; m+=10) labels.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
-
-  function timeToIdx(t){
-    return StationRegistry.timeBucket(t);
-  }
-
-  // 從 replayData.records 取該站的 在站數 與 有效車位
-  const stockArr = new Array(144).fill(null);
-  const capArr = new Array(144).fill(null);
-  if(replayData && replayData.records){
-    [...replayData.records].sort((a,b)=>String(a.datetime||a.time).localeCompare(String(b.datetime||b.time))).forEach(rec=>{
-      const idx = timeToIdx(rec.time);
-      if(idx<0 || idx>=144) return;
-      let arr = rec.stations[s.code];
-      if(arr === undefined){
-        for(const k in rec.stations){ if(k.endsWith(s.code)||k.includes(s.code)){ arr=rec.stations[k]; break; } }
-      }
-      if(arr !== undefined){
-        const value = StationRegistry.observation(arr);
-        stockArr[idx] = value.rent;
-        capArr[idx] = value.capacity;             // 缺測保留 null，不冒充 0
-      }
-    });
-  }
-
+  const series = [...replayDataByDate.entries()].map(([date, entry])=>({date, ...bucketSeries(entry.records, s.code)}));
   const zeroArr = labels.map(()=>0);
 
   // Y軸範圍
   let allV = [0];
-  stockArr.forEach(v=>{ if(v!==null) allV.push(v); });
-  capArr.forEach(v=>{ if(v!==null) allV.push(v); });
+  series.forEach(item=>item.stock.forEach(v=>{ if(v!==null) allV.push(v); }));
+  const latestSeries = series[series.length-1] || null;
+  if(latestSeries) latestSeries.capacity.forEach(v=>{ if(v!==null) allV.push(v); });
   const yMin = Math.min(...allV) - 5;
   const yMax = Math.max(...allV) + 5;
 
   const ds = [];
   if(liveLineVisible.stock){
-    ds.push({label:'在站車輛數', data:stockArr, borderColor:'#5dd3b3', backgroundColor:'#5dd3b322', borderWidth:2, pointRadius:2, pointHoverRadius:5, pointBackgroundColor:'#5dd3b3', fill:false, tension:0.2, spanGaps:true});
+    series.forEach(item=>{
+      const color = dateColor(item.date);
+      ds.push({label:`在站 ${item.date}`, data:item.stock, borderColor:color, backgroundColor:color+'22', borderWidth:2, pointRadius:2, pointHoverRadius:5, pointBackgroundColor:color, fill:false, tension:0.2, spanGaps:false});
+    });
   }
-  if(liveLineVisible.capacity){
-    ds.push({label:'有效車位(在站+空位)', data:capArr, borderColor:'#ff6b6b', borderWidth:2, borderDash:[6,3], pointRadius:0, fill:false, tension:0.2, spanGaps:true});
+  if(liveLineVisible.capacity && latestSeries){
+    ds.push({label:`有效車位 ${latestSeries.date}`, data:latestSeries.capacity, borderColor:'#ff6b6b', borderWidth:2, borderDash:[6,3], pointRadius:0, fill:false, tension:0.2, spanGaps:false});
   }
   if(liveLineVisible.zero){
     ds.push({label:'0 (見底)', data:zeroArr, borderColor:'#ffb84d', borderWidth:2, pointRadius:0, fill:false, tension:0});
@@ -1270,13 +1364,6 @@ function drawLiveChart(s){
             title:(items)=>{
               const i = items[0].dataIndex;
               return labels[i] || '';
-            },
-            afterBody:(items)=>{
-              const i = items[0].dataIndex;
-              const lines = [];
-              if(stockArr[i] !== null && stockArr[i] !== undefined) lines.push('在站: '+stockArr[i]+' 台');
-              if(capArr[i] !== null && capArr[i] !== undefined) lines.push('有效車位: '+capArr[i]);
-              return lines;
             }
           }
         }
@@ -1315,8 +1402,22 @@ document.getElementById('districtFilter').addEventListener('change', renderAll);
 document.getElementById('zoneFilter').addEventListener('change', renderAll);
 document.getElementById('levelFilter').addEventListener('change', renderAll);
 
-document.getElementById('dateSelect').addEventListener('change', e=>{
-  loadReplay(e.target.value);
+document.getElementById('datePickerButton').addEventListener('click', ()=>{
+  const menu = document.getElementById('dateMenu');
+  setDateMenu(menu ? menu.hidden : true);
+});
+document.getElementById('dateLatest').addEventListener('click', ()=>{
+  const latest = availableDates[availableDates.length-1];
+  if(latest) loadReplays([latest], {followLatest:true});
+  setDateMenu(false);
+});
+document.getElementById('dateClear').addEventListener('click', ()=>{
+  loadReplays([]);
+  setDateMenu(false);
+});
+document.addEventListener?.('click', event=>{
+  const picker = document.getElementById('datePicker');
+  if(picker && !picker.contains(event.target)) setDateMenu(false);
 });
 
 refreshStationOptions();

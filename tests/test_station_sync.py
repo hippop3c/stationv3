@@ -218,7 +218,73 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(saved[1]["stations"]["TPE500101999"], [3, 17])
             self.assertEqual(saved[1]["stations"]["TPE500199999"], [0, 0])
             self.assertEqual(saved[1]["stations"]["TPE500101004"], [None, None])
-            self.assertEqual(json.loads((Path(directory) / "index.json").read_text())["2026-08-27"]["count"], 2)
+            metadata = json.loads((Path(directory) / "index.json").read_text())["2026-08-27"]
+            self.assertEqual(metadata["count"], 2)
+            self.assertEqual(metadata["buckets"], 2)
+            self.assertEqual(metadata["expected"], 144)
+            self.assertEqual(metadata["missing_buckets"], 142)
+            self.assertAlmostEqual(metadata["coverage"], 2 / 144, places=6)
+
+    def test_same_ten_minute_bucket_keeps_only_latest_record(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
+            rows = [{"id": "TPE500101003", "rent": 1, "return": 27}]
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:01:00+08:00"), rows)
+            rows[0]["rent"] = 9
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:09:00+08:00"), rows)
+
+            saved = json.loads((Path(directory) / "2026-08-27.json").read_text())
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["time"], "08:09")
+            self.assertEqual(saved[0]["stations"]["TPE500101003"], [9, 27])
+            metadata = json.loads((Path(directory) / "index.json").read_text())["2026-08-27"]
+            self.assertEqual(metadata["latest"], "08:09")
+            self.assertEqual(metadata["buckets"], 1)
+            self.assertEqual(metadata["missing_buckets"], 143)
+
+    def test_older_retry_does_not_replace_newer_record_in_same_bucket(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
+            newer = [{"id": "TPE500101003", "rent": 9, "return": 19}]
+            older = [{"id": "TPE500101003", "rent": 1, "return": 27}]
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:09:00+08:00"), newer)
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:01:00+08:00"), older)
+
+            saved = json.loads((Path(directory) / "2026-08-27.json").read_text())
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(saved[0]["time"], "08:09")
+            self.assertEqual(saved[0]["stations"]["TPE500101003"], [9, 19])
+
+    def test_adjacent_ten_minute_buckets_are_both_kept_and_sorted(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
+            rows = [{"id": "TPE500101003", "rent": 1, "return": 27}]
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:10:00+08:00"), rows)
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T08:09:00+08:00"), rows)
+
+            saved = json.loads((Path(directory) / "2026-08-27.json").read_text())
+            self.assertEqual([record["time"] for record in saved], ["08:09", "08:10"])
+            metadata = json.loads((Path(directory) / "index.json").read_text())["2026-08-27"]
+            self.assertEqual(metadata["bucket_labels"], ["08:00", "08:10"])
+            self.assertNotIn("08:00", metadata["missing_labels"])
+            self.assertNotIn("08:10", metadata["missing_labels"])
+
+    def test_existing_duplicate_buckets_are_normalized_on_next_save(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
+            path = Path(directory) / "2026-08-27.json"
+            old_early = {
+                "time": "06:01", "datetime": "2026-08-27T06:01:00+08:00",
+                "stations": {"TPE500101003": [1, 27]},
+            }
+            old_late = {
+                "time": "06:08", "datetime": "2026-08-27T06:08:00+08:00",
+                "stations": {"TPE500101003": [8, 20]},
+            }
+            path.write_text(json.dumps([old_early, old_late]), encoding="utf-8")
+            fetch_tdx.save_record(datetime.fromisoformat("2026-08-27T06:10:00+08:00"), [
+                {"id": "TPE500101003", "rent": 10, "return": 18},
+            ])
+
+            saved = json.loads(path.read_text())
+            self.assertEqual([record["time"] for record in saved], ["06:08", "06:10"])
+            self.assertEqual(saved[0]["stations"]["TPE500101003"], [8, 20])
 
     def test_midnight_creates_new_day_and_preserves_previous(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(fetch_tdx, "DATA_DIR", Path(directory)):
@@ -258,6 +324,7 @@ class HistoryTests(unittest.TestCase):
         with patch.object(fetch_tdx, "sync_station_registry"), \
              patch.object(fetch_tdx, "get_token", return_value="test"), \
              patch.object(fetch_tdx, "SHOTS", 1), \
+             patch.object(fetch_tdx, "RETRIES", 1), \
              patch.object(fetch_tdx, "snapshot_once", side_effect=RuntimeError("offline")), \
              patch.object(fetch_tdx, "save_record") as save:
             with self.assertRaises(SystemExit):
