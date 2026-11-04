@@ -372,9 +372,11 @@ function renderDataTime(){
 }
 
 function dateColor(date){
-  let hash = 0;
-  for(const ch of String(date||'')) hash = ((hash * 31) + ch.charCodeAt(0)) >>> 0;
-  return DATE_COLORS[hash % DATE_COLORS.length];
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  let serial = Number.isFinite(parsed) ? Math.floor(parsed / 86400000) : 0;
+  if(!serial) for(const ch of String(date||'')) serial = ((serial * 31) + ch.charCodeAt(0)) >>> 0;
+  const hue = (serial * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)} 72% 62%)`;
 }
 
 function renderDatePicker(){
@@ -604,7 +606,6 @@ let followLatest = false;
 let replayRequestId = 0;
 let stationRegistryUpdatedAt = '';
 let dataRefreshInFlight = null;
-const DATE_COLORS = ['#f0883e','#5dd3b3','#60a5fa','#a78bfa','#f472b6','#facc15','#22d3ee','#fb7185','#84cc16','#c084fc','#fb923c','#2dd4bf'];
 // GITHUB_TOKEN 的資料提交不會觸發 Pages 重建，正式站直接讀 Git 最新資料。
 // 本地預覽仍使用 checkout 中的 data/，不需要認證或瀏覽器儲存。
 const DATA_BASE = location.hostname === 'hippop3c.github.io'
