@@ -914,13 +914,14 @@ function drawChart(s, st){
             ds.push({label:'即時在站('+rent+'台 '+(liveData.time||'')+')', data:liveLine, borderColor:'#60a5fa', borderWidth:2, borderDash:[2,2], pointRadius:0, fill:false, tension:0});
           }
         }
-        // 每個已選日期各一條線；缺測時段保留 null，禁止跨缺口連線。
+        // 每個已選日期各一條線；缺測時段保留 null，但跨缺口連接實際觀測點，
+        // 讓使用者仍能沿時間軸判讀整天趨勢，不把不同日期或推估值混進來。
         if(lineVisible.replay){
           replayDataByDate.forEach((entry, date)=>{
             const values = hourlyRent(entry.records, s.code);
             const replayLine = labels.map((_, index)=>values[index+6] ?? null);
             const color = dateColor(date);
-            ds.push({label:`在站 ${date}`, data:replayLine, borderColor:color, backgroundColor:color+'22', borderWidth:3, pointRadius:4, pointHoverRadius:7, pointBackgroundColor:color, fill:false, tension:0.15, spanGaps:false});
+            ds.push({label:`在站 ${date}`, data:replayLine, borderColor:color, backgroundColor:color+'22', borderWidth:3, pointRadius:4, pointHoverRadius:7, pointBackgroundColor:color, fill:false, tension:0.15, spanGaps:true});
           });
         }
         // 0 線
@@ -1338,11 +1339,11 @@ function drawLiveChart(s){
   if(liveLineVisible.stock){
     series.forEach(item=>{
       const color = dateColor(item.date);
-      ds.push({label:`在站 ${item.date}`, data:item.stock, borderColor:color, backgroundColor:color+'22', borderWidth:2, pointRadius:2, pointHoverRadius:5, pointBackgroundColor:color, fill:false, tension:0.2, spanGaps:false});
+      ds.push({label:`在站 ${item.date}`, data:item.stock, borderColor:color, backgroundColor:color+'22', borderWidth:2, pointRadius:2, pointHoverRadius:5, pointBackgroundColor:color, fill:false, tension:0.2, spanGaps:true});
     });
   }
   if(liveLineVisible.capacity && latestSeries){
-    ds.push({label:`有效車位 ${latestSeries.date}`, data:latestSeries.capacity, borderColor:'#ff6b6b', borderWidth:2, borderDash:[6,3], pointRadius:0, fill:false, tension:0.2, spanGaps:false});
+    ds.push({label:`有效車位 ${latestSeries.date}`, data:latestSeries.capacity, borderColor:'#ff6b6b', borderWidth:2, borderDash:[6,3], pointRadius:0, fill:false, tension:0.2, spanGaps:true});
   }
   if(liveLineVisible.zero){
     ds.push({label:'0 (見底)', data:zeroArr, borderColor:'#ffb84d', borderWidth:2, pointRadius:0, fill:false, tension:0});

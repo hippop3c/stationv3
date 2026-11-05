@@ -230,34 +230,36 @@ test('refresh requests coalesce, then retry after a timed-out registry request',
   assert.equal(app.value('STATIONS.length'), 3387);
 });
 
-test('live chart draws one gap-preserving line for every selected date', () => {
+test('live chart connects observations across missing buckets for every selected date', () => {
   const app = page();
   app.context.firstDay = [
     snapshot('2026-08-26', '00:00', 0), snapshot('2026-08-26', '00:20', 7),
     snapshot('2026-08-26', '23:59', 9), snapshot('2026-08-26', '23:55', 5)
   ];
   app.context.secondDay = [snapshot('2026-08-27', '00:10', 4)];
-  app.run("liveLineVisible={stock:true,capacity:false,zero:false}; replayDataByDate=new Map([['2026-08-26',{date:'2026-08-26',records:firstDay}],['2026-08-27',{date:'2026-08-27',records:secondDay}]]); drawLiveChart(stationByCode['500101003'])");
+  app.run("liveLineVisible={stock:true,capacity:true,zero:false}; replayDataByDate=new Map([['2026-08-26',{date:'2026-08-26',records:firstDay}],['2026-08-27',{date:'2026-08-27',records:secondDay}]]); drawLiveChart(stationByCode['500101003'])");
   const data = app.charts.at(-1).data, lines = data.datasets.filter(dataset => dataset.label.startsWith('在站 '));
+  const capacity = data.datasets.find(dataset => dataset.label.startsWith('有效車位 '));
   assert.equal(data.labels.length, 144);
   assert.deepEqual(Array.from(lines, dataset => dataset.label), ['在站 2026-08-26', '在站 2026-08-27']);
-  assert.equal(lines[0].spanGaps, false);
-  assert.equal(lines[1].spanGaps, false);
+  assert.equal(lines[0].spanGaps, true);
+  assert.equal(lines[1].spanGaps, true);
   assert.deepEqual(Array.from(lines[0].data.slice(0, 3)), [0, null, 7]);
   assert.deepEqual(Array.from(lines[1].data.slice(0, 3)), [null, 4, null]);
   assert.equal(lines[0].data[143], 9);
   assert.notEqual(lines[0].borderColor, lines[1].borderColor);
+  assert.equal(capacity.spanGaps, true);
 });
 
-test('main analysis chart draws one independent replay line for every selected date', () => {
+test('main analysis chart connects observations on each independent replay line', () => {
   const app = page();
   app.context.firstDay = [snapshot('2026-08-26', '06:00', 5), snapshot('2026-08-26', '08:00', 8)];
   app.context.secondDay = [snapshot('2026-08-27', '07:00', 6)];
   app.run("lineVisible={people:false,dispatch:false,stock:false,live:false,replay:true,capacity:false,zero:false}; replayDataByDate=new Map([['2026-08-26',{date:'2026-08-26',records:firstDay}],['2026-08-27',{date:'2026-08-27',records:secondDay}]]); drawChart(stationByCode['500101003'], getState('500101003'))");
   const lines = app.charts.at(-1).data.datasets.filter(dataset => dataset.label.startsWith('在站 '));
   assert.deepEqual(Array.from(lines, dataset => dataset.label), ['在站 2026-08-26', '在站 2026-08-27']);
-  assert.equal(lines[0].spanGaps, false);
-  assert.equal(lines[1].spanGaps, false);
+  assert.equal(lines[0].spanGaps, true);
+  assert.equal(lines[1].spanGaps, true);
   assert.deepEqual(Array.from(lines[0].data.slice(0, 3)), [5, null, 8]);
   assert.deepEqual(Array.from(lines[1].data.slice(0, 3)), [null, 6, null]);
   assert.notEqual(lines[0].borderColor, lines[1].borderColor);
